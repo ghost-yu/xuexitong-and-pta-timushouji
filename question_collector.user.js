@@ -3,7 +3,7 @@
 // @namespace    http://tampermonkey.net/
 // @version      1.7
 // @description  智能答案提取：优先从答对题目提取正确答案，支持三种平台（超星作业/章节/PTA）
-// @author       You
+// @author       shishishi
 // @match        https://mooc1.chaoxing.com/mooc-ans/mooc2/work/*
 // @match        https://mooc1.chaoxing.com/mycourse/studentstudy?*
 // @match        https://pintia.cn/problem-sets/*/exam/problems/type/*
