@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         题目收集助手
 // @namespace    http://tampermonkey.net/
-// @version      1.7
-// @description  智能答案提取：优先从答对题目提取正确答案，支持三种平台（超星作业/章节/PTA）
+// @version      2.0
+// @description  智能答案提取：优先从答对题目提取正确答案，支持三种平台（超星作业/章节/PTA），移动端优化，代码格式保留
 // @author       shishishi
 // @match        https://mooc1.chaoxing.com/mooc-ans/mooc2/work/*
 // @match        https://mooc1.chaoxing.com/mycourse/studentstudy?*
@@ -18,8 +18,25 @@
   const DB_KEY = 'collectedQuestions';
   const BUTTON_STYLE = 'position:fixed;right:20px;z-index:99999;padding:10px 20px;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:16px;box-shadow:0 2px 5px rgba(0,0,0,0.3);';
 
-  function normalizeText(text) {
-    return (text || '').replace(/\s+/g, ' ').trim();
+  function normalizeText(text, preserveFormat = false) {
+    if (!text) return '';
+    // 如果需要保留格式（用于代码题目），只移除首尾空白
+    if (preserveFormat) {
+      return text.trim();
+    }
+    // 自动检测是否包含代码特征（换行符、大括号、分号、方括号等）
+    const hasCodePattern = text.includes('\n') || /[{}();[\]]/.test(text);
+    if (hasCodePattern) {
+      // 保留换行符和缩进，只移除首尾空白和每行尾部空白
+      const lines = text.split('\n');
+      // 移除开头和结尾的空行
+      while (lines.length > 0 && lines[0].trim() === '') lines.shift();
+      while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
+      // 保留每行的前导空格（缩进），但移除尾部空格
+      return lines.map(line => line.trimEnd()).join('\n');
+    }
+    // 否则标准化：合并多个空白为一个空格
+    return text.replace(/\s+/g, ' ').trim();
   }
 
   function normalizeAnswer(answer) {
@@ -117,7 +134,14 @@
       if (typeText.includes('多选')) type = 'multiple';
       else if (typeText.includes('判断')) type = 'judge';
 
-      const options = Array.from(item.querySelectorAll('.mark_letter li, .answer_option li')).map((opt) => normalizeText(opt.textContent));
+      const options = Array.from(item.querySelectorAll('.mark_letter li, .answer_option li')).map((opt) => {
+        const text = opt.textContent || '';
+        // 检测是否包含代码特征，如果有则保留格式
+        if (text.includes('\n') || /[{}();\[\]]/.test(text)) {
+          return normalizeText(text, true); // 保留格式
+        }
+        return normalizeText(text);
+      });
 
       // 作业页答案提取逻辑
       let answerText = '';
@@ -149,7 +173,8 @@
       }
 
       const answer = normalizeAnswer(answerText);
-      const title = normalizeText(titleEl.textContent);
+      // normalizeText 现在会自动检测代码特征并保留格式
+      const title = normalizeText(titleEl.textContent || '');
 
       return {
         type,
@@ -224,8 +249,8 @@
 
       if (!titleEl) return;
 
-      // 提取题目标题（去除题型标签）
-      let titleText = normalizeText(titleEl.textContent);
+      // 提取题目标题（normalizeText 会自动检测代码特征并保留格式）
+      let titleText = normalizeText(titleEl.textContent || '');
       // 去除【单选题】【多选题】【判断题】等标签
       titleText = titleText.replace(/^【[^】]+】\s*/, '');
 
@@ -265,13 +290,19 @@
         const optionLabel = li.querySelector('i')?.textContent || '';
         const optionContent = li.querySelector('a')?.textContent || li.textContent || '';
 
+        let fullText = '';
         // 如果有分离的标签和内容，组合它们
         if (optionLabel && optionContent && optionLabel !== optionContent) {
-          return normalizeText(optionLabel + ' ' + optionContent);
+          fullText = optionLabel + ' ' + optionContent;
+        } else {
+          fullText = li.textContent || '';
         }
 
-        // 否则使用完整文本
-        return normalizeText(li.textContent);
+        // 检测是否包含代码特征，如果有则保留格式
+        if (fullText.includes('\n') || /[{}();\[\]]/.test(fullText)) {
+          return normalizeText(fullText, true); // 保留格式
+        }
+        return normalizeText(fullText);
       }).filter(Boolean);
 
       // 提取答案：优先从答对题目的"我的答案"提取，其次从"正确答案"区提取
@@ -571,7 +602,15 @@
         const prefix = getOptionPrefix(label, index);
         // 提取选项内容，移除开头的 A. B. 等
         const contentNode = label.querySelector('.rendered-markdown, [class*="markdown"], .break-words');
-        let content = normalizeText((contentNode || label).textContent);
+        const rawContent = (contentNode || label).textContent || '';
+
+        // 检测是否包含代码特征
+        let content;
+        if (rawContent.includes('\n') || /[{}();\[\]]/.test(rawContent)) {
+          content = normalizeText(rawContent, true); // 保留格式
+        } else {
+          content = normalizeText(rawContent);
+        }
 
         // 移除开头的 A. B. 或 A、 B、
         content = content.replace(/^[A-Z][\.\、\．\。\s]+/, '').trim();
@@ -682,8 +721,18 @@
       return;
     }
     const html = generateStudyPage(questions);
-    const blob = new Blob([html], { type: 'text/html' });
-    GM_openInTab(URL.createObjectURL(blob));
+
+    // 移动端兼容：使用 data URL 而不是 Blob URL
+    // data URL 在移动端浏览器支持更好
+    const dataUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+
+    try {
+      GM_openInTab(dataUrl);
+    } catch (e) {
+      // 如果 GM_openInTab 失败，尝试直接打开
+      console.error('GM_openInTab 失败:', e);
+      window.open(dataUrl, '_blank');
+    }
   }
 
   function clearQuestions() {
@@ -768,7 +817,16 @@
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
     link.download = `题目学习系统_${new Date().toISOString().slice(0, 10)}.html`;
-    link.click();
+
+    // 移动端兼容：添加错误处理
+    try {
+      link.click();
+    } catch (e) {
+      console.error('下载失败，尝试备用方案:', e);
+      // 备用方案：使用 data URL
+      link.href = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+      link.click();
+    }
   }
 
   function generateStudyPage(questions) {
@@ -850,14 +908,19 @@ function renderQuestions(){
     const div=document.createElement('div');
     div.className='question';
     const typeMap={single:'单选题',multiple:'多选题',judge:'判断题',programming:'编程题'};
+    // 检测题目是否包含代码（有换行符、大括号、分号、方括号等）
+    const hasCode = (q.title||'').includes('\\n') || /[{}();\\[\\]]/.test(q.title||'');
     let html='<div class="question-title">'+
       '<span class="question-type">'+(typeMap[q.type]||'题目')+'</span>'+
       '<span class="source">'+(q.source||'')+'</span>'+
-      (q.type==='programming'?'':'<div style="margin-top:10px">'+(q.title||'')+'</div>')+
       '</div>';
-    if(q.type==='programming'){
-      html+='<pre>'+ (q.title||'') +'</pre>';
+    // 如果是编程题或包含代码，使用 pre 标签保留格式
+    if(q.type==='programming' || hasCode){
+      html+='<pre style="background:#f5f5f5;padding:15px;border-radius:5px;overflow-x:auto;white-space:pre-wrap;word-wrap:break-word;">'+ (q.title||'') +'</pre>';
     }else{
+      html+='<div style="margin-top:10px">'+(q.title||'')+'</div>';
+    }
+    if(q.type!=='programming'){
       html+='<div class="options">';
       q.options.forEach((opt,i)=>{
         html+='<div class="option" data-q="'+idx+'" data-idx="'+i+'" data-type="'+q.type+'">'+(opt||'')+'</div>';
@@ -920,7 +983,17 @@ function getCorrectIndices(q){
   if(!q.answer) return [];
   const letters=q.answer.toUpperCase().match(/[A-Z]/g);
   if(!letters) return [];
-  return letters.map((letter)=>q.options.findIndex((opt)=>opt.toUpperCase().trim().startsWith(letter))).filter((idx)=>idx>=0);
+  // 修复：精确匹配 "A. " 或 "A、" 格式，而不是简单检查开头
+  return letters.map((letter)=>{
+    return q.options.findIndex((opt)=>{
+      const trimmed = opt.trim().toUpperCase();
+      // 匹配 "A. " 或 "A、" 或 "A." 开头（后面紧跟空格或分隔符）
+      return trimmed === letter || 
+             trimmed.startsWith(letter + '. ') || 
+             trimmed.startsWith(letter + '、') ||
+             trimmed.startsWith(letter + '.');
+    });
+  }).filter((idx)=>idx>=0);
 }
 
 function checkAnswer(idx){
@@ -984,17 +1057,20 @@ function shuffleArray(arr){
 
 function splitOption(option,fallbackIndex){
   const text=typeof option==='string'?option:'';
-  // 匹配 "A. 内容" 或 "A 内容" 或 "A. 内容"（各种分隔符）
-  const match=text.match(/^\s*([A-Z])[\.\、．。\s]+(.*)$/i);
+  // 匹配 "A. 内容" 或 "A、内容" - 必须有分隔符（点号、顿号等）
+  // 修复：只匹配字母后紧跟分隔符的情况，避免误匹配 "s+4" 等内容
+  const match=text.match(/^\s*([A-Z])[\.\、．。]\s*(.*)$/i);
   if(match){
-    // 清理 body，移除开头可能残留的点号和空格
-    const body=match[2].trim().replace(/^[\.\、．。\s]+/, '');
+    // 清理 body，移除开头可能残留的点号和空格（但保留其他字符如 +、*、[ 等）
+    let body=match[2].trim();
+    // 只移除开头的点号和空格，不要误删其他符号
+    while(body.length > 0 && /^[\.\、．。\s]/.test(body[0])){
+      body = body.substring(1);
+    }
     return {letter:match[1].toUpperCase(),body:body};
   }
-  // 如果没匹配到，可能整个就是内容（没有字母前缀）
-  // 也要清理可能的前缀残留
-  const cleanBody=text.trim().replace(/^[\.\、．。\s]+/, '');
-  return {letter:String.fromCharCode(65+fallbackIndex),body:cleanBody};
+  // 如果没匹配到字母+分隔符，整个文本就是内容
+  return {letter:String.fromCharCode(65+fallbackIndex),body:text.trim()};
 }
 
 function shuffleQuestionOptions(question){
@@ -1004,6 +1080,10 @@ function shuffleQuestionOptions(question){
     const {letter,body}=splitOption(opt,idx);
     const normalizedLetter=letter || String.fromCharCode(65+idx);
     const isCorrect=(question.answer||'').includes(normalizedLetter);
+    // 调试日志：检查解析结果
+    if(!body || body.length === 0){
+      console.warn('警告：选项解析后 body 为空', {原选项: opt, letter, body});
+    }
     return {body,letter:normalizedLetter,isCorrect};
   });
   const shuffled=shuffleArray(parsed);
@@ -1013,8 +1093,10 @@ function shuffleQuestionOptions(question){
     if(item.isCorrect){
       newAnswerLetters.push(newLetter);
     }
-    const body=item.body;
-    return body ? newLetter + '. ' + body : newLetter + '.';
+    const body=item.body || '';
+    // 如果 body 是空字符串，也要拼接（避免吞掉内容）
+    // 修复：使用 !== undefined 而不是 truthy 检查
+    return body.length > 0 ? newLetter + '. ' + body : newLetter + '.';
   });
   if(question.answer){
     if(question.type==='multiple'){
